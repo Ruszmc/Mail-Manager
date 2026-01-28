@@ -57,6 +57,9 @@ def _extract_snippet(msg: email.message.Message, max_len: int = 240) -> str | No
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_len]
 
+class ImapAuthenticationError(Exception):
+    pass
+
 class ImapClient:
     def __init__(self, host: str, port: int = 993, tls: bool = True):
         self.host = host
@@ -77,11 +80,21 @@ class ImapClient:
 
     def login(self, email_addr: str, password: str):
         assert self.conn is not None
-        self.conn.login(email_addr, password)
+        try:
+            self.conn.login(email_addr, password)
+        except imaplib.IMAP4.error as e:
+            if "AUTHENTICATIONFAILED" in str(e).upper():
+                raise ImapAuthenticationError(f"IMAP authentication failed: {str(e)}")
+            raise Exception(f"IMAP login failed: {str(e)}")
+        except Exception as e:
+            raise Exception(f"IMAP login failed: {str(e)}")
 
     def select_inbox(self):
         assert self.conn is not None
-        self.conn.select("INBOX")
+        try:
+            self.conn.select("INBOX")
+        except Exception as e:
+            raise Exception(f"Failed to select INBOX: {str(e)}")
 
     def fetch_latest(self, limit: int = 50):
         """

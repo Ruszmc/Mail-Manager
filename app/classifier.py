@@ -49,3 +49,20 @@ def priority_score(subject: str | None, snippet: str | None, newsletter: bool) -
     if "?" in (subject or ""):
         score += 10
     return min(score, 100)
+
+def generate_reply_suggestion(subject: str | None, snippet: str | None) -> str:
+    """
+    Simuliert eine KI-Antwortgenerierung. 
+    In einer echten App würde hier ein LLM (OpenAI/Mistral) aufgerufen werden.
+    """
+    subj = (subject or "").lower()
+    text = (snippet or "").lower()
+
+    if "termin" in text or "meeting" in text or "invite" in text:
+        return "Vielen Dank für die Einladung. Ich schaue in meinen Kalender und melde mich zeitnah zurück."
+    if "rechnung" in text or "invoice" in text:
+        return "Vielen Dank für die Zusendung der Rechnung. Ich werde diese prüfen und die Zahlung veranlassen."
+    if "frage" in text or "?" in subj:
+        return "Vielen Dank für Ihre Nachricht. Ich werde mir Ihre Frage ansehen und Ihnen so schnell wie möglich antworten."
+    
+    return "Vielen Dank für Ihre Nachricht. Ich habe sie erhalten und werde mich bei Bedarf zurückmelden."
