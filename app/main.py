@@ -9,8 +9,18 @@ from .db import Base, engine, get_db
 from .models import Account, Thread, Message
 from .crypto import encrypt, decrypt
 from .imap_client import ImapClient, ImapAuthenticationError
-from .classifier import thread_key, is_newsletter, category_guess, priority_score, generate_reply_suggestion
+from .classifier import (
+    thread_key,
+    is_newsletter,
+    category_guess,
+    priority_score,
+    generate_reply_suggestion,
+    generate_thread_summary,
+    extract_action_items,
+    suggest_labels,
+)
 from .smtp_client import SmtpClient
+from .mail_providers import discover_provider, guess_imap_host, guess_smtp_host
 
 load_dotenv()
 Base.metadata.create_all(bind=engine)
@@ -52,6 +62,10 @@ def root(db: Session = Depends(get_db)):
                 .badge-newsletter { background: #d1d8e0; color: #4b6584; }
                 .badge-finance { background: #fed330; color: #7f8c8d; }
                 .badge-calendar { background: #45aaf2; color: white; }
+                .badge-general { background: #a5b1c2; color: white; }
+                .badge-security { background: #eb3b5a; color: white; }
+                .badge-shipping { background: #26de81; color: #1e272e; }
+                .badge-unknown { background: #778ca3; color: white; }
             </style>
         </head>
         <body>
@@ -81,9 +95,30 @@ def root(db: Session = Depends(get_db)):
                         
                         <div id="add-account-form" class="hidden">
                             <h3>Neuer Account</h3>
+                            <label for="acc-provider" style="font-size: 0.8rem; color: #7f8c8d;">Provider (optional)</label>
+                            <select id="acc-provider">
+                                <option value="">Automatisch erkennen</option>
+                                <option value="gmail">Gmail</option>
+                                <option value="outlook">Outlook/Hotmail</option>
+                                <option value="office365">Office365</option>
+                                <option value="yahoo">Yahoo</option>
+                                <option value="icloud">iCloud</option>
+                                <option value="gmx">GMX</option>
+                                <option value="webde">WEB.DE</option>
+                                <option value="t-online">T-Online</option>
+                            </select>
                             <input type="email" id="acc-email" placeholder="Email">
                             <input type="password" id="acc-pass" placeholder="Passwort / App-Passwort">
-                            <input type="text" id="acc-imap" placeholder="IMAP Host (z.B. imap.gmail.com)">
+                            <input type="text" id="acc-imap" placeholder="IMAP Host (z.B. imap.gmail.com) - optional">
+                            <input type="text" id="acc-smtp" placeholder="SMTP Host (z.B. smtp.gmail.com) - optional">
+                            <div style="display: flex; gap: 10px;">
+                                <input type="number" id="acc-imap-port" placeholder="IMAP Port (993)" min="1">
+                                <input type="number" id="acc-smtp-port" placeholder="SMTP Port (587)" min="1">
+                            </div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <label style="font-size: 0.85rem;"><input type="checkbox" id="acc-imap-tls" checked> IMAP TLS</label>
+                                <label style="font-size: 0.85rem;"><input type="checkbox" id="acc-smtp-tls" checked> SMTP TLS</label>
+                            </div>
                             <div style="display: flex; gap: 10px;">
                                 <button class="btn" onclick="saveAccount()">Speichern</button>
                                 <button class="btn btn-secondary" onclick="hideAddAccount()">Abbrechen</button>
@@ -102,7 +137,7 @@ def root(db: Session = Depends(get_db)):
                 <div id="main-content">
                     <div id="thread-detail" class="card">
                         <h2>Willkommen</h2>
-                        <p>Wähle einen Thread aus, um Nachrichten anzuzeigen und KI-Antwortvorschläge zu erhalten.</p>
+                        <p>Wähle einen Thread aus, um Nachrichten anzuzeigen, KI-Insights zu erhalten und Antworten vorzubereiten.</p>
                     </div>
                 </div>
             </div>
@@ -159,7 +194,23 @@ def root(db: Session = Depends(get_db)):
                     const msgs = await res.json();
                     
                     const detail = document.getElementById('thread-detail');
-                    detail.innerHTML = `<h3>${msgs[0]?.subject || 'Thread'}</h3><div id="msgs-container"></div><hr><div id="reply-section"><h4>KI-Antwortvorschlag</h4><p id="suggestion-text">Lade Vorschlag...</p><button class="btn" id="send-btn">Antwort senden</button></div>`;
+                    detail.innerHTML = `
+                        <h3>${msgs[0]?.subject || 'Thread'}</h3>
+                        <div id="msgs-container"></div>
+                        <hr>
+                        <div id="insights-section">
+                            <h4>KI-Insights</h4>
+                            <p id="summary-text">Lade Zusammenfassung...</p>
+                            <div id="actions-list"></div>
+                            <div id="label-chips"></div>
+                        </div>
+                        <hr>
+                        <div id="reply-section">
+                            <h4>KI-Antwortvorschlag</h4>
+                            <p id="suggestion-text">Lade Vorschlag...</p>
+                            <button class="btn" id="send-btn">Antwort senden</button>
+                        </div>
+                    `;
                     
                     const container = document.getElementById('msgs-container');
                     msgs.forEach(m => {
@@ -171,6 +222,17 @@ def root(db: Session = Depends(get_db)):
                         `;
                         container.appendChild(mDiv);
                     });
+
+                    // Insights laden
+                    const iRes = await fetch(`/threads/${threadId}/insights`);
+                    const iData = await iRes.json();
+                    document.getElementById('summary-text').innerText = iData.summary;
+
+                    const actionsList = document.getElementById('actions-list');
+                    actionsList.innerHTML = '<strong>Nächste Schritte</strong><ul>' + iData.actions.map(a => `<li>${a}</li>`).join('') + '</ul>';
+
+                    const labels = document.getElementById('label-chips');
+                    labels.innerHTML = '<strong>Labels</strong> ' + iData.labels.map(l => `<span class="badge badge-${l}">${l}</span>`).join(' ');
 
                     // Suggestion laden
                     const sRes = await fetch(`/threads/${threadId}/suggest-reply`);
@@ -207,11 +269,25 @@ def root(db: Session = Depends(get_db)):
                     const email = document.getElementById('acc-email').value;
                     const pass = document.getElementById('acc-pass').value;
                     const imap = document.getElementById('acc-imap').value;
+                    const smtp = document.getElementById('acc-smtp').value;
+                    const imapPortRaw = document.getElementById('acc-imap-port').value;
+                    const smtpPortRaw = document.getElementById('acc-smtp-port').value;
+                    const imapTls = document.getElementById('acc-imap-tls').checked;
+                    const smtpTls = document.getElementById('acc-smtp-tls').checked;
                     
                     const res = await fetch('/accounts', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ email, password: pass, imap_host: imap })
+                        body: JSON.stringify({
+                            email,
+                            password: pass,
+                            imap_host: imap || null,
+                            smtp_host: smtp || null,
+                            imap_port: imapPortRaw ? Number(imapPortRaw) : null,
+                            smtp_port: smtpPortRaw ? Number(smtpPortRaw) : null,
+                            imap_tls: imapTls,
+                            smtp_tls: smtpTls
+                        })
                     });
                     
                     if(res.ok) {
@@ -223,6 +299,27 @@ def root(db: Session = Depends(get_db)):
                 }
                 
                 // Initiale Threads laden für den ersten Account falls vorhanden
+                function applyProviderDefaults(providerKey) {
+                    const presets = {
+                        gmail: { imap_host: "imap.gmail.com", smtp_host: "smtp.gmail.com" },
+                        outlook: { imap_host: "imap-mail.outlook.com", smtp_host: "smtp-mail.outlook.com" },
+                        office365: { imap_host: "outlook.office365.com", smtp_host: "smtp.office365.com" },
+                        yahoo: { imap_host: "imap.mail.yahoo.com", smtp_host: "smtp.mail.yahoo.com" },
+                        icloud: { imap_host: "imap.mail.me.com", smtp_host: "smtp.mail.me.com" },
+                        gmx: { imap_host: "imap.gmx.net", smtp_host: "smtp.gmx.net" },
+                        webde: { imap_host: "imap.web.de", smtp_host: "smtp.web.de" },
+                        "t-online": { imap_host: "imap.t-online.de", smtp_host: "smtp.t-online.de" }
+                    };
+                    const preset = presets[providerKey];
+                    if (!preset) return;
+                    document.getElementById('acc-imap').value = preset.imap_host;
+                    document.getElementById('acc-smtp').value = preset.smtp_host;
+                }
+
+                document.getElementById('acc-provider').addEventListener('change', (event) => {
+                    applyProviderDefaults(event.target.value);
+                });
+
                 window.onload = () => {
                     const firstAcc = document.querySelector('.account-item');
                     if (firstAcc) {
@@ -238,12 +335,12 @@ def root(db: Session = Depends(get_db)):
 class AccountCreate(BaseModel):
     email: EmailStr
     password: str  # For IMAP/SMTP: use app-password whenever possible.
-    imap_host: str
-    imap_port: int = 993
-    imap_tls: bool = True
+    imap_host: str | None = None
+    imap_port: int | None = None
+    imap_tls: bool | None = None
     smtp_host: str | None = None
-    smtp_port: int | None = 587
-    smtp_tls: bool | None = True
+    smtp_port: int | None = None
+    smtp_tls: bool | None = None
 
 class AccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -267,14 +364,27 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=409, detail="Account already exists")
 
+    provider = discover_provider(str(payload.email))
+
+    imap_host = payload.imap_host or (provider.imap_host if provider else None) or guess_imap_host(str(payload.email))
+    if not imap_host:
+        raise HTTPException(status_code=400, detail="IMAP host could not be determined. Please provide imap_host.")
+
+    imap_port = payload.imap_port or (provider.imap_port if provider else None) or 993
+    imap_tls = payload.imap_tls if payload.imap_tls is not None else (provider.imap_tls if provider else True)
+
+    smtp_host = payload.smtp_host or (provider.smtp_host if provider else None) or guess_smtp_host(str(payload.email), imap_host)
+    smtp_port = payload.smtp_port or (provider.smtp_port if provider else None) or 587
+    smtp_tls = payload.smtp_tls if payload.smtp_tls is not None else (provider.smtp_tls if provider else True)
+
     acc = Account(
         email=str(payload.email),
-        imap_host=payload.imap_host,
-        imap_port=payload.imap_port,
-        imap_tls=payload.imap_tls,
-        smtp_host=payload.smtp_host,
-        smtp_port=payload.smtp_port or 587,
-        smtp_tls=payload.smtp_tls if payload.smtp_tls is not None else True,
+        imap_host=imap_host,
+        imap_port=imap_port,
+        imap_tls=imap_tls,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_tls=smtp_tls,
         password_enc=encrypt(payload.password),
     )
     db.add(acc)
@@ -429,3 +539,18 @@ def suggest_reply(thread_id: int, db: Session = Depends(get_db)):
     )
     
     return {"suggestion": suggestion}
+
+
+@app.get("/threads/{thread_id}/insights")
+def thread_insights(thread_id: int, db: Session = Depends(get_db)):
+    th = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not th:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    last_msg = db.query(Message).filter(Message.thread_id == thread_id).order_by(Message.date.desc().nullslast()).first()
+    snippet = last_msg.snippet if last_msg else None
+    summary = generate_thread_summary(th.subject, snippet)
+    actions = extract_action_items(th.subject, snippet)
+    labels = suggest_labels(th.subject, snippet, th.is_newsletter)
+
+    return {"summary": summary, "actions": actions, "labels": labels}
