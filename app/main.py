@@ -9,7 +9,16 @@ from .db import Base, engine, get_db
 from .models import Account, Thread, Message
 from .crypto import encrypt, decrypt
 from .imap_client import ImapClient, ImapAuthenticationError
-from .classifier import thread_key, is_newsletter, category_guess, priority_score, generate_reply_suggestion
+from .classifier import (
+    thread_key,
+    is_newsletter,
+    category_guess,
+    priority_score,
+    generate_reply_suggestion,
+    generate_thread_summary,
+    extract_action_items,
+    suggest_labels,
+)
 from .smtp_client import SmtpClient
 from .mail_providers import discover_provider, guess_imap_host, guess_smtp_host
 
@@ -53,6 +62,10 @@ def root(db: Session = Depends(get_db)):
                 .badge-newsletter { background: #d1d8e0; color: #4b6584; }
                 .badge-finance { background: #fed330; color: #7f8c8d; }
                 .badge-calendar { background: #45aaf2; color: white; }
+                .badge-general { background: #a5b1c2; color: white; }
+                .badge-security { background: #eb3b5a; color: white; }
+                .badge-shipping { background: #26de81; color: #1e272e; }
+                .badge-unknown { background: #778ca3; color: white; }
             </style>
         </head>
         <body>
@@ -124,7 +137,7 @@ def root(db: Session = Depends(get_db)):
                 <div id="main-content">
                     <div id="thread-detail" class="card">
                         <h2>Willkommen</h2>
-                        <p>Wähle einen Thread aus, um Nachrichten anzuzeigen und KI-Antwortvorschläge zu erhalten.</p>
+                        <p>Wähle einen Thread aus, um Nachrichten anzuzeigen, KI-Insights zu erhalten und Antworten vorzubereiten.</p>
                     </div>
                 </div>
             </div>
@@ -181,7 +194,23 @@ def root(db: Session = Depends(get_db)):
                     const msgs = await res.json();
                     
                     const detail = document.getElementById('thread-detail');
-                    detail.innerHTML = `<h3>${msgs[0]?.subject || 'Thread'}</h3><div id="msgs-container"></div><hr><div id="reply-section"><h4>KI-Antwortvorschlag</h4><p id="suggestion-text">Lade Vorschlag...</p><button class="btn" id="send-btn">Antwort senden</button></div>`;
+                    detail.innerHTML = `
+                        <h3>${msgs[0]?.subject || 'Thread'}</h3>
+                        <div id="msgs-container"></div>
+                        <hr>
+                        <div id="insights-section">
+                            <h4>KI-Insights</h4>
+                            <p id="summary-text">Lade Zusammenfassung...</p>
+                            <div id="actions-list"></div>
+                            <div id="label-chips"></div>
+                        </div>
+                        <hr>
+                        <div id="reply-section">
+                            <h4>KI-Antwortvorschlag</h4>
+                            <p id="suggestion-text">Lade Vorschlag...</p>
+                            <button class="btn" id="send-btn">Antwort senden</button>
+                        </div>
+                    `;
                     
                     const container = document.getElementById('msgs-container');
                     msgs.forEach(m => {
@@ -193,6 +222,17 @@ def root(db: Session = Depends(get_db)):
                         `;
                         container.appendChild(mDiv);
                     });
+
+                    // Insights laden
+                    const iRes = await fetch(`/threads/${threadId}/insights`);
+                    const iData = await iRes.json();
+                    document.getElementById('summary-text').innerText = iData.summary;
+
+                    const actionsList = document.getElementById('actions-list');
+                    actionsList.innerHTML = '<strong>Nächste Schritte</strong><ul>' + iData.actions.map(a => `<li>${a}</li>`).join('') + '</ul>';
+
+                    const labels = document.getElementById('label-chips');
+                    labels.innerHTML = '<strong>Labels</strong> ' + iData.labels.map(l => `<span class="badge badge-${l}">${l}</span>`).join(' ');
 
                     // Suggestion laden
                     const sRes = await fetch(`/threads/${threadId}/suggest-reply`);
@@ -499,3 +539,18 @@ def suggest_reply(thread_id: int, db: Session = Depends(get_db)):
     )
     
     return {"suggestion": suggestion}
+
+
+@app.get("/threads/{thread_id}/insights")
+def thread_insights(thread_id: int, db: Session = Depends(get_db)):
+    th = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not th:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    last_msg = db.query(Message).filter(Message.thread_id == thread_id).order_by(Message.date.desc().nullslast()).first()
+    snippet = last_msg.snippet if last_msg else None
+    summary = generate_thread_summary(th.subject, snippet)
+    actions = extract_action_items(th.subject, snippet)
+    labels = suggest_labels(th.subject, snippet, th.is_newsletter)
+
+    return {"summary": summary, "actions": actions, "labels": labels}

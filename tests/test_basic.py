@@ -8,6 +8,7 @@ os.environ.setdefault("MP_FERNET_KEY", Fernet.generate_key().decode("utf-8"))
 
 from app.main import app, get_db
 from app.db import Base
+from app.models import Thread, Message
 
 # Use a separate test database
 TEST_DB_URL = "sqlite:///./test_mailpilot.db"
@@ -75,3 +76,35 @@ def test_list_accounts():
     response = client.get("/accounts")
     assert response.status_code == 200
     assert len(response.json()) >= 1
+
+
+def test_thread_insights():
+    db = TestingSessionLocal()
+    try:
+        thread = Thread(
+            account_id=1,
+            provider_thread_key="subject::example.com",
+            subject="Rechnung für Oktober",
+            category="finance",
+            priority_score=50,
+            is_newsletter=False,
+        )
+        db.add(thread)
+        db.flush()
+        msg = Message(
+            thread_id=thread.id,
+            imap_uid=123,
+            subject=thread.subject,
+            snippet="Anbei die Rechnung. Bitte Zahlung bis zum 15.10.",
+        )
+        db.add(msg)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/threads/{thread.id}/insights")
+    assert response.status_code == 200
+    data = response.json()
+    assert "summary" in data
+    assert "actions" in data
+    assert "labels" in data
