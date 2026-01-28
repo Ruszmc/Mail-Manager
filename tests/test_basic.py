@@ -1,11 +1,13 @@
-from fastapi.testclient import TestClient
-import pytest
 import os
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from cryptography.fernet import Fernet
+
+os.environ.setdefault("MP_FERNET_KEY", Fernet.generate_key().decode("utf-8"))
+
 from app.main import app, get_db
 from app.db import Base
-from app.crypto import encrypt
 
 # Use a separate test database
 TEST_DB_URL = "sqlite:///./test_mailpilot.db"
@@ -46,13 +48,28 @@ def test_create_account():
             "password": "password123",
             "imap_host": "imap.example.com",
             "imap_port": 993,
-            "imap_tls": True
+            "imap_tls": True,
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_tls": True
         },
     )
     assert response.status_code == 200
     data = response.json()
     assert data["email"] == "test@example.com"
     assert "id" in data
+
+def test_create_account_with_autodiscovery():
+    response = client.post(
+        "/accounts",
+        json={
+            "email": "user@gmail.com",
+            "password": "password123"
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["imap_host"] == "imap.gmail.com"
 
 def test_list_accounts():
     response = client.get("/accounts")
