@@ -1,0 +1,8 @@
+.mp_fernet_key
+*.db
+__pycache__/
+backend/.venv/
+backend/.env
+frontend/.env.local
+node_modules/
+.next/
